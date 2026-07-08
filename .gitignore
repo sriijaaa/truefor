@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Model weights & cloned third-party repos (downloaded/built by setup_environment.sh)
+models/
+third_party/
+
+# Dataset & generated pipeline outputs (regenerate locally; may contain large/licensed data)
+data/
+outputs/
+
+# OS
+.DS_Store
+Thumbs.db
