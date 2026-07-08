@@ -2,14 +2,24 @@
 # ---------------------------------------------------------------------------
 # run_pipeline.sh
 #
-# Orchestrates 01 -> 08 in sequence. A single --limit / --time_budget_minutes
-# is passed through to every step. The remaining time budget is recomputed
-# before each step; once it's exhausted, remaining steps are SKIPPED
-# entirely (no model load attempted) rather than launched and immediately
-# cut off, and whatever manifests exist so far are used for the final
-# summary. `set -euo pipefail` means any step that hard-fails (bad config,
-# missing columns, etc.) stops the whole run immediately -- fail fast rather
-# than silently limping forward on broken output.
+# Orchestrates 01, 02, 05, 03, 04, 06, 07, 08 IN THAT EXECUTION ORDER (note:
+# 05 runs before 03/04 -- see below). Scripts keep their original numeric
+# filenames for continuity; only the invocation order here changed. A single
+# --limit / --time_budget_minutes is passed through to every step. The
+# remaining time budget is recomputed before each step; once it's exhausted,
+# remaining steps are SKIPPED entirely (no model load attempted) rather than
+# launched and immediately cut off, and whatever manifests exist so far are
+# used for the final summary. `set -euo pipefail` means any step that
+# hard-fails (bad config, missing columns, etc.) stops the whole run
+# immediately -- fail fast rather than silently limping forward on broken
+# output.
+#
+# WHY 05 RUNS BEFORE 03/04: this data source (pos.zip/neg.zip pairs, see
+# 00_build_metadata_from_pico_zips.py) has no prompt text, so
+# 03_extract_target_phrase.py can no longer ground a given sentence. Instead
+# it runs Florence-2 unprompted and picks whichever candidate region best
+# overlaps the SSIM diff mask's location -- which means the diff mask (05)
+# has to exist first.
 #
 # Usage:
 #   ./run_pipeline.sh --dry_run
@@ -117,14 +127,14 @@ step "01_split_edit_types" \
 step "02_align_pairs" \
     python3 02_align_pairs.py "${COMMON_FLAGS[@]}" --time_budget_minutes "$(remaining_minutes)"
 
+step "05_generate_diff_masks" \
+    python3 05_generate_diff_masks.py "${COMMON_FLAGS[@]}"
+
 step "03_extract_target_phrase" \
     python3 03_extract_target_phrase.py "${COMMON_FLAGS[@]}" --time_budget_minutes "$(remaining_minutes)"
 
 step "04_generate_grounded_masks" \
     python3 04_generate_grounded_masks.py "${COMMON_FLAGS[@]}" --time_budget_minutes "$(remaining_minutes)"
-
-step "05_generate_diff_masks" \
-    python3 05_generate_diff_masks.py "${COMMON_FLAGS[@]}"
 
 step "06_cross_validate_and_clean" \
     python3 06_cross_validate_and_clean.py "${COMMON_FLAGS[@]}"

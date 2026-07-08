@@ -118,6 +118,35 @@ class Florence2Wrapper:
         )
         return parsed.get(task, {"bboxes": [], "labels": []})
 
+    def propose_regions(self, image) -> dict:
+        """Runs config.FLORENCE2_REGION_TASK (<DENSE_REGION_CAPTION> by
+        default) with NO input text -- used when there's no prompt sentence
+        to ground a phrase from. Returns candidate (phrase, box) pairs for
+        whatever salient regions/objects Florence-2 finds in `image`; the
+        caller (03_extract_target_phrase.py) picks whichever one best
+        matches the SSIM diff mask's location. Same return shape as
+        ground_phrase(): {'bboxes': [[x1,y1,x2,y2], ...], 'labels': [str, ...]}
+        """
+        import torch
+
+        task = config.FLORENCE2_REGION_TASK
+        inputs = self.processor(text=task, images=image, return_tensors="pt")
+        inputs = {k: v.to(self.device, self.dtype if v.dtype.is_floating_point else v.dtype)
+                  for k, v in inputs.items()}
+        with torch.no_grad():
+            generated_ids = self.model.generate(
+                input_ids=inputs["input_ids"],
+                pixel_values=inputs["pixel_values"],
+                max_new_tokens=1024,
+                num_beams=3,
+                do_sample=False,
+            )
+        generated_text = self.processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
+        parsed = self.processor.post_process_generation(
+            generated_text, task=task, image_size=(image.width, image.height)
+        )
+        return parsed.get(task, {"bboxes": [], "labels": []})
+
 
 # ---------------------------------------------------------------------------
 # Grounding DINO (original IDEA-Research/GroundingDINO, vendored inside

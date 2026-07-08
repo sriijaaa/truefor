@@ -20,6 +20,26 @@ MODEL SOURCING NOTE (read before running setup_environment.sh):
     compilation fails, rather than hard-aborting setup.
   - Florence-2 is unaffected by this -- it's not part of Grounded-SAM-2 and
     still loads via `transformers` as microsoft/Florence-2-base.
+
+DATA SOURCE NOTE (2026-07-08): the actual data available for this project is
+a Google Drive export with TWO UNRELATED parts confirmed to share no join
+key: (a) pos.zip/neg.zip + manifest CSVs -- ~8.9K real local original/edited
+image pairs (pos/{id}.jpg = ORIGINAL, neg/{id}.jpg = EDITED) but NO prompt
+text; (b) sft.jsonl -- 257K records WITH prompt/edit_type text, but
+referencing different images we don't have locally. We're building around
+(a). This means the pipeline no longer has a prompt sentence to ground a
+phrase from, so:
+  - 00_build_metadata_from_pico_zips.py is a new one-off adapter that builds
+    data/metadata.csv directly from pos.zip/neg.zip (see that script).
+  - 01_split_edit_types.py needs no change: blank edit_type/prompt already
+    default to "local" per its existing tie-breaking rule.
+  - 03_extract_target_phrase.py now runs Florence-2 UNPROMPTED
+    (<DENSE_REGION_CAPTION>, see FLORENCE2_REGION_TASK below) on the edited
+    image, then picks whichever candidate region has the highest IoU against
+    the SSIM diff mask's bounding box as the "extracted phrase" -- so 05
+    (diff masks) must run BEFORE 03 now. run_pipeline.sh reflects this
+    reordering; the scripts keep their original numeric filenames so nothing
+    else has to be renamed.
 """
 
 import os
@@ -93,6 +113,7 @@ QC_GRID_PNG = QC_DIR / "visual_qc_grid.png"                           # 08
 # Model checkpoints
 # ---------------------------------------------------------------------------
 FLORENCE2_MODEL_ID = "microsoft/Florence-2-base"          # base, not large; via `transformers`
+FLORENCE2_REGION_TASK = "<DENSE_REGION_CAPTION>"          # unprompted region proposals (no prompt text available)
 
 # Grounding DINO (original IDEA-Research/GroundingDINO code, vendored inside
 # Grounded-SAM-2 at third_party/Grounded-SAM-2/grounding_dino/). Config is a
@@ -125,6 +146,8 @@ GROUNDING_DINO_TEXT_THRESHOLD = 0.25   # min text-token confidence
 IOU_ACCEPT_THRESHOLD = 0.30            # grounded-vs-diff mask agreement to accept
 MIN_COMPONENT_AREA_PX = 100            # connected components smaller than this are dropped
 ASPECT_RATIO_MISMATCH_PCT = 5.0        # flag pairs whose aspect ratio differs by more than this
+REGION_MATCH_MIN_IOU = 0.05            # min IoU a Florence-2 region proposal must have against the
+                                        # diff-mask bbox to be picked as the "extracted phrase" target
 
 # ---------------------------------------------------------------------------
 # Local vs. global edit keyword lists (used by 01_split_edit_types.py)
@@ -147,6 +170,13 @@ GLOBAL_EDIT_KEYWORDS = [
     "day to night", "night to day", "resolution", "upscale",
     "denoise", "art style", "painting", "sketch", "cartoon", "anime",
 ]
+
+# ---------------------------------------------------------------------------
+# Data source: pos/neg zip adapter (00_build_metadata_from_pico_zips.py)
+# ---------------------------------------------------------------------------
+GDRIVE_RAW_DIR = DATA_DIR / "gdrive_raw"
+POS_ZIP_PATH = GDRIVE_RAW_DIR / "pos.zip"   # pos/{id}.jpg = ORIGINAL (per user confirmation)
+NEG_ZIP_PATH = GDRIVE_RAW_DIR / "neg.zip"   # neg/{id}.jpg = EDITED
 
 # ---------------------------------------------------------------------------
 # Budget / run-control defaults

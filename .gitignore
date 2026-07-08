@@ -19,3 +19,6 @@ outputs/
 # OS
 .DS_Store
 Thumbs.db
+
+# Scratch verification downloads (temporary, may contain real dataset content)
+scratch_check/
