@@ -17,9 +17,15 @@ with no prompt text instead of grounding a sentence.
 A pair is only used if its numeric id appears in BOTH pos.zip and neg.zip
 (some ids are apparently missing from one side or the other -- 8,906 files
 in pos.zip vs 8,821 in neg.zip). Only the ids actually needed (respecting
---limit) are decompressed from the zips -- zipfile supports random access to
-individual members via the central directory, so this does NOT require
-unzipping the full ~1.8GB archive.
+--limit) are decompressed from the zips -- listing uses Python's `zipfile`
+(reads just the central directory, confirmed reliable), but actual
+extraction shells out to the system `unzip` binary instead of
+`zipfile.open()`. These particular archives trip a known Python `zipfile`
+bug ("Bad magic number for file header") where it trusts stale byte offsets
+in the central directory for some members near the start of the file;
+`unzip` (Info-ZIP) auto-corrects for this and was confirmed working against
+the same archives. Neither approach requires unzipping the full ~1.8GB
+archive -- both do targeted single-member extraction.
 
 Usage:
   python 00_build_metadata_from_pico_zips.py --dry_run
@@ -29,6 +35,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import shutil
+import subprocess
 import time
 import zipfile
 from pathlib import Path
@@ -39,10 +47,24 @@ import pipeline_utils as pu
 OUTPUT_COLUMNS = ["pair_id", "original_path", "edited_path", "edit_type", "prompt"]
 
 
-def extract_member(zf: zipfile.ZipFile, member_name: str, dest_path: Path) -> None:
+class MemberExtractionError(Exception):
+    pass
+
+
+def extract_member(zip_path: str, member_name: str, dest_path: Path) -> None:
+    """Extract a single member via the system `unzip` binary (see module
+    docstring for why -- Python's zipfile module fails on these archives)."""
     dest_path.parent.mkdir(parents=True, exist_ok=True)
-    with zf.open(member_name) as src, open(dest_path, "wb") as dst:
-        dst.write(src.read())
+    result = subprocess.run(
+        ["unzip", "-p", str(zip_path), member_name],
+        capture_output=True,
+    )
+    if result.returncode != 0 or not result.stdout:
+        raise MemberExtractionError(
+            f"unzip -p {zip_path} {member_name} failed (exit {result.returncode}): "
+            f"{result.stderr.decode(errors='replace')[:300]}"
+        )
+    dest_path.write_bytes(result.stdout)
 
 
 def main():
@@ -65,6 +87,12 @@ def main():
     logger = pu.setup_logging("00_build_metadata_from_pico_zips")
     if args.dry_run:
         logger.setLevel("DEBUG")
+
+    if shutil.which("unzip") is None:
+        logger.error("`unzip` binary not found on PATH -- required for extraction (see module "
+                      "docstring for why we don't use Python's zipfile module here). "
+                      "Install it, e.g. `apt-get install -y unzip`.")
+        raise SystemExit(1)
 
     limit = pu.resolve_limit(args.limit, args.dry_run)
     logger.info(f"dry_run={args.dry_run} limit={limit} pos_zip={args.pos_zip} neg_zip={args.neg_zip}")
@@ -106,8 +134,8 @@ def main():
                 orig_dest = config.IMAGES_ROOT / f"{pair_id}_original{ext}"
                 edited_dest = config.IMAGES_ROOT / f"{pair_id}_edited{ext}"
 
-                extract_member(zf_pos, member_name, orig_dest)
-                extract_member(zf_neg, member_name, edited_dest)
+                extract_member(args.pos_zip, member_name, orig_dest)
+                extract_member(args.neg_zip, member_name, edited_dest)
 
                 writer.write_row({
                     "pair_id": pair_id,
@@ -119,9 +147,9 @@ def main():
                 n_ok += 1
                 logger.debug(f"{pair_id}: extracted original + edited")
 
-            except KeyError as e:
+            except MemberExtractionError as e:
                 n_errors += 1
-                logger.error(f"{pair_id}: member missing from one of the zips -- {e}")
+                logger.error(f"{pair_id}: extraction failed -- {e}")
             except Exception as e:
                 n_errors += 1
                 logger.error(f"{pair_id}: unexpected error -- {e}")
